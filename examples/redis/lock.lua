@@ -31,16 +31,15 @@ local function lock(keys, args)
     local name = keys[1]
     local cookie = args[1]
     local timeout = args[2]
-    if redis.call('EXISTS', name) == 1 then
-        local existing_cookie = redis.call('GET', name)
-        if existing_cookie == cookie then
-            return redis.call('PEXPIRE', name, timeout)
-        else
-            return -lerrorCodes.EBUSY
-        end
+    local lock_status = assert_lock(keys, args)
+    if lock_status == 0 then
+        redis.call('PEXPIRE', name, timeout)
+        return 0
+    elseif lock_status == -lerrorCodes.ENOENT then
+        redis.call('SET', name, cookie, 'PX', timeout)
+        return 0
     end
-    redis.call('SET', name, cookie, 'PX', timeout)
-    return 0
+    return lock_status
 end
 
 --- Release the lock on a resource.
@@ -57,19 +56,16 @@ local function unlock(keys, args)
     return 0
 end
 
---- Perform another operation if the lock is acquired.
---- The operation to perform is a function name.
---- The args should be of the form - {cookie, NUMKEYS, key1, key2, ..., args1, args2, ...}
---- @param keys table A two-element list - lock name and operation name
---- @param args table A three-element list - cookie and operation arguments
-local function assert_lock_and_perform(keys, args)
+--- Assert if the lock is held by the owner of the cookie
+--- @param keys table A single element list - lock name
+--- @param args table A single-element list - cookie 
+local function assert_lock(keys, args)
     local name = keys[1]
-    local operation = keys[2]
     local cookie = args[1]
     if redis.call('EXISTS', name) == 1 then
         local existing_cookie = redis.call('GET', name)
         if existing_cookie == cookie then
-            return redis.call("FCALL", operation, unpack(args, 1))
+            return 0 -- success
         else
             return -lerrorCodes.EBUSY
         end
@@ -77,25 +73,14 @@ local function assert_lock_and_perform(keys, args)
     return -lerrorCodes.ENOENT
 end
 
-local function assert_lock_and_perform2(keys, args)
-    local name = keys[1]
-    local operation = keys[2]
-    local cookie = args[1]
-    if redis.call('EXISTS', name) == 1 then
-        local existing_cookie = redis.call('GET', name)
-        if existing_cookie == cookie then
-            fn = operationFactory(operation)
-            return fn(unpack(args, 1))
-        else
-            return -lerrorCodes.EBUSY
-        end
-    end
-    return -lerrorCodes.ENOENT
-end
 --- Register the functions.
 redis.register_function('lock', lock)
 redis.register_function('unlock', unlock)
-redis.register_function('assert_lock_and_perform', assert_lock_and_perform)
-redis.register_function('assert_lock_and_perform2', assert_lock_and_perform2)
-redis.register_function('testlockscope', testlockscope)
-redis.register_function('testfunc', testfunc)
+redis.register_function('assert_lock', assert_lock)
+
+local function testoperation(keys, args)
+    --- get last element from keys and args
+    local name = keys[#keys]
+    local arg = args[#args]
+    return name .. arg
+end
